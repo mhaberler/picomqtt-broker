@@ -1,6 +1,6 @@
 # PicoMQTT Broker example
 
-A lightweight MQTT broker implementation for ESP32-S3 and ESP32-C6 devices using the PicoMQTT library. This project provides both TCP and WebSocket MQTT connectivity with button input functionality.
+A lightweight MQTT broker implementation for ESP32-S2, ESP32-S3 and ESP32-C6 devices using the PicoMQTT library. This project provides both TCP and WebSocket MQTT connectivity with button input functionality.
 
 ## Features
 
@@ -13,12 +13,11 @@ A lightweight MQTT broker implementation for ESP32-S3 and ESP32-C6 devices using
 
 ## Hardware Requirements
 
+- ESP32-S2 development board (tested with M5Stick Cplus 1.1)
 - ESP32-S3 development board (tested with M5Stack Atom-S3U)
 - ESP32-C6 development board (tested with M5Stack Nano ESP32-C6)
 - Physical button connected to GPIO (configurable)
 - WiFi connectivity
-
-**Note**: The Arduino Nano ESP32-C6 is a compact form factor board that works well for this project with minimal modifications.
 
 ## Dependencies
 
