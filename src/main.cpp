@@ -1,261 +1,125 @@
-#include <M5CoreS3.h>
+#include <Arduino.h>
 #include <WiFi.h>
-#include <quirc.h>
+#include <ESPmDNS.h>
+#include <PicoMQTT.h>
+#include <PicoWebsocket.h>
+#include <ArduinoJson.h>
+#include "OneButton.h"
 
-// Struct to hold the parsed WiFi configuration
-struct WiFiConfig {
-    String SSID;
-    String type;
-    String password;
+#define MQTT_PORT 1883
+#define MQTTWS_PORT 8883
+const char *hostname = "picomqtt";
+
+OneButton button(BUTTON_PIN, true,
+                 true); // Button pin, active low, pullup enabled
+wl_status_t wifi_status = WL_STOPPED;
+WiFiServer tcp_server(MQTT_PORT);
+WiFiServer websocket_underlying_server(MQTTWS_PORT);
+PicoWebsocket::Server<::WiFiServer>
+    websocket_server(websocket_underlying_server);
+
+class CustomMQTTServer : public PicoMQTT::Server {
+  using PicoMQTT::Server::Server;
+
+public:
+  int32_t connected, subscribed, messages;
+
+protected:
+  void on_connected(const char *client_id) override {
+    log_i("client %s connected", client_id);
+    connected++;
+  }
+  virtual void on_disconnected(const char *client_id) override {
+    log_i("client %s disconnected", client_id);
+    connected--;
+  }
+  virtual void on_subscribe(const char *client_id, const char *topic) override {
+    log_i("client %s subscribed %s", client_id, topic);
+    subscribed++;
+  }
+  virtual void on_unsubscribe(const char *client_id,
+                              const char *topic) override {
+    log_i("client %s unsubscribed %s", client_id, topic);
+    subscribed--;
+  }
+  virtual void on_message(const char *topic,
+                          PicoMQTT::IncomingPacket &packet) override {
+    log_i("message topic=%s", topic);
+    PicoMQTT::Server::Server::on_message(topic, packet);
+    messages++;
+  }
 };
 
-wl_status_t wifi_status = WL_STOPPED;
-struct WiFiConfig wcfg;
+CustomMQTTServer mqtt(tcp_server, websocket_server);
 
-struct quirc_code *code;
-struct quirc_data *data;
+int numClicks = 0;
+void singleClick() {
+  log_i("singleClick() detected.");
+  numClicks = 1;
+}
 
-WiFiConfig parseWiFiQR(const String& qrText);
+void doubleClick() {
+  log_i("doubleClick() detected.");
+  numClicks = 2;
+}
 
-// Convert RGB565 to 8-bit grayscale using luminance weights
-static inline void rgb565_to_grayscale(const uint16_t* input, uint8_t* output, int width, int height) {
-    for (int i = 0; i < width * height; i++) {
-        uint16_t rgb = input[i];
-
-        // Extract RGB components
-        uint8_t r = ((rgb >> 11) & 0x1F) << 3;  // 5 bits to 8 bits
-        uint8_t g = ((rgb >> 5) & 0x3F) << 2;   // 6 bits to 8 bits
-        uint8_t b = (rgb & 0x1F) << 3;          // 5 bits to 8 bits
-
-        // Calculate grayscale using luminance weights
-        output[i] = (uint8_t)(0.299f * r + 0.587f * g + 0.114f * b);
-    }
+void multiClick() {
+  int n = button.getNumberClicks();
+  log_i("multiClick clicks = %d", n);
+  numClicks = n;
 }
 
 void setup() {
-
-    M5.begin();
-    auto cfg = M5.config();
-    CoreS3.begin(cfg);
-
-    CoreS3.Display.setTextColor(GREEN);
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.setFont(&fonts::Orbitron_Light_24);
-    CoreS3.Display.setTextSize(1);
-
-    // tweak the default camera config
-    CoreS3.Camera.config->pixel_format = PIXFORMAT_GRAYSCALE;
-    CoreS3.Camera.config->frame_size = FRAMESIZE_QVGA;
-    if (!CoreS3.Camera.begin()) {
-        CoreS3.Display.drawString("Camera Init Fail", CoreS3.Display.width() / 2, CoreS3.Display.height() / 2);
-    }
-
-    code = (struct quirc_code *)ps_malloc(sizeof(struct quirc_code));
-    data = (struct quirc_data *)ps_malloc(sizeof(struct quirc_data));
-
-    assert(code != NULL);
-    assert(data != NULL);
-    CoreS3.Display.drawString("Camera Init Success", CoreS3.Display.width() / 2, CoreS3.Display.height() / 2);
-    delay(500);
+  Serial.begin(115200);
+  delay(3000);
+  button.attachClick(singleClick);
+  button.attachDoubleClick(doubleClick);
+  button.attachMultiClick(multiClick);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
 void loop() {
-    M5.update();
-
-    wl_status_t ws = WiFi.status();
-    if (ws ^ wifi_status) {
-        wifi_status = ws; // track changes
-        CoreS3.Display.clear();
-        CoreS3.Display.setTextColor(GREEN);
-        // CoreS3.Display.setTextDatum(middle_center);
-        CoreS3.Display.setFont(&fonts::FreeSans12pt7b);
-        CoreS3.Display.setTextSize(1);
-
-        CoreS3.Display.setCursor(0, 20);
-        switch (ws) {
-            case WL_CONNECTED:
-                CoreS3.Display.println("WiFi: Connected");
-                CoreS3.Display.print("IP: ");
-                CoreS3.Display.println(WiFi.localIP());
-                break;
-            case WL_NO_SSID_AVAIL:
-                CoreS3.Display.printf("WiFi: SSID\n%s\nnot found\n", wcfg.SSID.c_str());
-                break;
-            case WL_DISCONNECTED:
-                CoreS3.Display.printf("WiFi: disconnected\n");
-                break;
-            default:
-                CoreS3.Display.printf("WiFi status: %d\n", ws);
-                break;
-        }
-        log_i("wifi_status=%d", wifi_status);
+  static unsigned long last_report = 0; // last report time
+  wl_status_t ws = WiFi.status();
+  if (ws ^ wifi_status) {
+    wifi_status = ws; // track changes
+    switch (ws) {
+    case WL_CONNECTED:
+      log_i("WiFi: Connected, IP: %s", WiFi.localIP().toString().c_str());
+      if (MDNS.begin(hostname)) {
+        MDNS.addService("mqtt", "tcp", MQTT_PORT);
+        MDNS.addService("mqtt-ws", "tcp", MQTTWS_PORT);
+        MDNS.addServiceTxt("mqtt-ws", "tcp", "path", "/mqtt");
+        mdns_service_instance_name_set("_mqtt", "_tcp", "PicoMQTT TCP broker");
+        mdns_service_instance_name_set("_mqtt-ws", "_tcp",
+                                       "PicoMQTT Websockets broker");
+      }
+      mqtt.begin();
+      break;
+    case WL_NO_SSID_AVAIL:
+      log_i("WiFi: SSID %s not found", WIFI_SSID);
+      break;
+    case WL_DISCONNECTED:
+      log_i("WiFi: disconnected");
+      break;
+    default:
+      log_i("WiFi status: %d", ws);
+      break;
     }
-    if ((ws != WL_CONNECTED) && CoreS3.Camera.get()) {
-        camera_fb_t *fb = CoreS3.Camera.fb;
-        if (fb) {
-            if (CoreS3.Camera.config->pixel_format == PIXFORMAT_RGB565) {
-                CoreS3.Display.pushImage(0, 0, CoreS3.Display.width(), CoreS3.Display.height(),
-                                         (uint16_t *)CoreS3.Camera.fb->buf);
-            }
-            if (CoreS3.Camera.config->pixel_format == PIXFORMAT_GRAYSCALE) {
-                CoreS3.Display.pushGrayscaleImage(0, 0, CoreS3.Display.width(), CoreS3.Display.height(),
-                                                  (uint8_t *)CoreS3.Camera.fb->buf, lgfx::v1::grayscale_8bit, TFT_WHITE, TFT_BLACK);
-            }
-            int width = fb->width;
-            int height = fb->height;
-            struct quirc *qr = quirc_new();
-
-            if (qr && quirc_resize(qr, width, height) >= 0) {
-                uint8_t *image = quirc_begin(qr, &width, &height);
-                if (image) {
-                    if (CoreS3.Camera.config->pixel_format == PIXFORMAT_RGB565) {
-                        rgb565_to_grayscale((const uint16_t*)fb->buf, image,  width, height);
-                    }
-                    if (CoreS3.Camera.config->pixel_format == PIXFORMAT_GRAYSCALE) {
-                        memcpy(image, fb->buf, fb->len);
-                    }
-                    quirc_end(qr);
-                    int num_codes = quirc_count(qr);
-                    if (num_codes) {
-                        // CoreS3.Speaker.tone(1000, 100);
-                        log_i("width %u height %u num_codes %d", fb->width, fb->height,num_codes);
-                    }
-
-                    for (int i = 0; i < num_codes; i++) {
-                        quirc_extract(qr, i, code);
-                        quirc_decode_error_t err = quirc_decode(code, data);
-                        if (err == QUIRC_ERROR_DATA_ECC) {
-                            quirc_flip(code);
-                            err = quirc_decode(code, data);
-                        }
-                        if (!err) {
-                            log_i("payload '%s'", data->payload);
-                            log_i("Version: %d", data->version);
-                            log_i("ECC level: %c", "MLHQ"[data->ecc_level]);
-                            log_i("Mask: %d", data->mask);
-                            log_i("Length: %d", data->payload_len);
-                            log_i("Payload: %s", data->payload);
-
-                            const String payload = String((const char *)data->payload);
-
-                            wcfg = parseWiFiQR(payload);
-                            log_i("SSID '%s'", wcfg.SSID.c_str());
-                            log_i("type '%s'", wcfg.type.c_str());
-                            log_i("password '%s'", wcfg.password.c_str());
-
-                            if (wcfg.SSID.length() > 0) {
-                                WiFi.begin(wcfg.SSID.c_str(), wcfg.password.c_str());
-                            }
-
-                            CoreS3.Display.clear();
-                            CoreS3.Display.setTextColor(GREEN);
-                            CoreS3.Display.setFont(&fonts::FreeSans12pt7b);
-                            CoreS3.Display.setTextSize(1);
-
-                            CoreS3.Display.setCursor(0, 20);
-                            CoreS3.Display.printf("QR: %s\n\n", payload.c_str());
-                            CoreS3.Display.printf("Version: %d\n", data->version);
-                            CoreS3.Display.printf("ECC level: %c\n", "MLHQ"[data->ecc_level]);
-                            CoreS3.Display.printf("Mask: %d\n", data->mask);
-                            CoreS3.Display.printf("Length: %d\n", data->payload_len);
-
-                            delay(3000);
-                        } else {
-                            CoreS3.Display.clear();
-                            CoreS3.Display.setTextColor(RED);
-                            CoreS3.Display.setFont(&fonts::Orbitron_Light_24);
-                            CoreS3.Display.setTextSize(1);
-
-                            CoreS3.Display.setCursor(20, 20);
-                            CoreS3.Display.printf("decode error: %d\n",err);
-                            delay(500);
-                        }
-                    }
-                }
-                quirc_destroy(qr);
-            }
-            CoreS3.Camera.free();
-        }
+    log_i("wifi_status=%d", wifi_status);
+  }
+  button.tick();
+  if (millis() - last_report > 500) {
+    if (numClicks > 0) {
+      JsonDocument output;
+      output["clicks"] = numClicks;
+      auto publish = mqtt.begin_publish("button", measureJson(output));
+      serializeJson(output, publish);
+      publish.send();
+      numClicks = 0;
     }
-    yield();
-}
-
-
-// Function to unescape special characters
-String unescape(const String& str) {
-    String result = "";
-    int i = 0;
-    while (i < str.length()) {
-        if (str[i] == '\\' && i + 1 < str.length()) {
-            char next = str[i + 1];
-            if (next == '\\') {
-                result += '\\';
-            } else if (next == ';') {
-                result += ';';
-            } else if (next == ',') {
-                result += ',';
-            } else if (next == '"') {
-                result += '"';
-            } else if (next == ':') {
-                result += ':';
-            } else {
-                // Unknown escape, add both
-                result += '\\';
-                result += next;
-            }
-            i += 2; // Skip both \\ and next
-        } else {
-            result += str[i];
-            i++;
-        }
-    }
-    return result;
-}
-
-// Helper function to process a single key-value pair
-void processPair(const String& pair, WiFiConfig& config) {
-    int colon = pair.indexOf(':');
-    if (colon != -1) {
-        String key = pair.substring(0, colon);
-        String value = pair.substring(colon + 1);
-        value = unescape(value);
-        if (value.startsWith("\"") && value.endsWith("\"")) {
-            value = value.substring(1, value.length() - 1);
-        }
-        if (key == "S") {
-            config.SSID = value;
-        } else if (key == "T") {
-            config.type = value;
-        } else if (key == "P") {
-            config.password = value;
-        }
-        // Add more fields if needed (e.g., H for hidden networks)
-    }
-}
-
-// Main function to parse WiFi QR code text
-WiFiConfig parseWiFiQR(const String& qrText) {
-    WiFiConfig config;
-    if (!qrText.startsWith("WIFI:")) {
-        // Handle error: not a valid WiFi QR code
-        return config;
-    }
-    String content = qrText.substring(5); // Remove "WIFI:"
-    // Remove trailing semicolons
-    while (content.endsWith(";")) {
-        content = content.substring(0, content.length() - 1);
-    }
-    // Split by semicolons
-    int start = 0;
-    int end = content.indexOf(';');
-    while (end != -1) {
-        String pair = content.substring(start, end);
-        processPair(pair, config);
-        start = end + 1;
-        end = content.indexOf(';', start);
-    }
-    // Process the last pair
-    String lastPair = content.substring(start);
-    processPair(lastPair, config);
-    return config;
+    last_report = millis();
+  }
+  mqtt.loop();
+  yield();
 }
