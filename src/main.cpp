@@ -1,17 +1,15 @@
+#include "OneButton.h"
 #include <Arduino.h>
-#include <WiFi.h>
+#include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <PicoMQTT.h>
 #include <PicoWebsocket.h>
-#include <ArduinoJson.h>
-#include "OneButton.h"
+#include <WiFi.h>
 
 #define MQTT_PORT 1883
 #define MQTTWS_PORT 8883
 const char *hostname = "picomqtt";
 
-OneButton button(BUTTON_PIN, true,
-                 true); // Button pin, active low, pullup enabled
 wl_status_t wifi_status = WL_STOPPED;
 WiFiServer tcp_server(MQTT_PORT);
 WiFiServer websocket_underlying_server(MQTTWS_PORT);
@@ -53,6 +51,11 @@ protected:
 CustomMQTTServer mqtt(tcp_server, websocket_server);
 
 int numClicks = 0;
+
+#ifdef BUTTON_PIN
+OneButton button(BUTTON_PIN, true,
+                 true); // Button pin, active low, pullup enabled
+
 void singleClick() {
   log_i("singleClick() detected.");
   numClicks = 1;
@@ -68,13 +71,16 @@ void multiClick() {
   log_i("multiClick clicks = %d", n);
   numClicks = n;
 }
+#endif
 
 void setup() {
   Serial.begin(115200);
   delay(3000);
+#ifdef BUTTON_PIN
   button.attachClick(singleClick);
   button.attachDoubleClick(doubleClick);
   button.attachMultiClick(multiClick);
+#endif
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
@@ -108,7 +114,9 @@ void loop() {
     }
     log_i("wifi_status=%d", wifi_status);
   }
+#ifdef BUTTON_PIN
   button.tick();
+#endif
   if (millis() - last_report > 500) {
     if (numClicks > 0) {
       JsonDocument output;
