@@ -81,8 +81,12 @@ void setup() {
   button.attachDoubleClick(doubleClick);
   button.attachMultiClick(multiClick);
 #endif
+  // WiFi.mode(WIFI_STA);
+  // WiFi.disconnect();
+  // delay(100);
+
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  WiFi.reconnect();
+  // WiFi.reconnect();
 }
 
 void loop() {
@@ -113,6 +117,7 @@ void loop() {
       log_i("WiFi status: %d", ws);
       break;
     }
+    delay(300);
   }
 #ifdef BUTTON_PIN
   button.tick();
