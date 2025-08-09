@@ -81,12 +81,9 @@ void setup() {
   button.attachDoubleClick(doubleClick);
   button.attachMultiClick(multiClick);
 #endif
-  // WiFi.mode(WIFI_STA);
-  // WiFi.disconnect();
-  // delay(100);
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  // WiFi.reconnect();
+
 }
 
 void loop() {
