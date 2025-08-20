@@ -10,6 +10,17 @@
 #define MQTTWS_PORT 8883
 const char *hostname = "picomqtt";
 
+void setup_ble(void);
+void process_ble(void);
+// #ifdef TEST_NIMBLE
+// #include "NimBLEDevice.h"
+// int scanTime = 5 * 1000;  // In milliseconds, 0 = scan forever
+// BLEScan *pBLEScan;
+
+// bool active = false;
+// void startBLEscan(void);
+// #endif
+
 wl_status_t wifi_status = WL_STOPPED;
 WiFiServer tcp_server(MQTT_PORT);
 WiFiServer websocket_underlying_server(MQTTWS_PORT);
@@ -81,7 +92,9 @@ void setup() {
   button.attachDoubleClick(doubleClick);
   button.attachMultiClick(multiClick);
 #endif
-
+#ifdef TEST_NIMBLE
+    setup_ble();
+#endif
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
 }
@@ -130,6 +143,8 @@ void loop() {
     }
     last_report = millis();
   }
+  process_ble();
   mqtt.loop();
-  yield();
+  delay(1);
 }
+
